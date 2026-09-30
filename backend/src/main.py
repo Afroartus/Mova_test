@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from .cache import close_cache, get_cache, init_cache
@@ -42,6 +43,14 @@ app = FastAPI(
     title=settings.app_name,
     version="1.0.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    # X-Tenant-Id es un header no simple: sin permitirlo el preflight falla.
+    allow_headers=["Content-Type", "X-Tenant-Id"],
 )
 
 app.include_router(tenants.router)

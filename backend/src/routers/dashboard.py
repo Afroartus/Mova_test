@@ -81,7 +81,7 @@ async def compute_from_db(
     line_totals = (
         select(
             SaleProduct.sale_id.label("sale_id"),
-            func.sum(SaleProduct.price).label("total"),
+            func.sum(SaleProduct.price * SaleProduct.quantity).label("total"),
         )
         .where(SaleProduct.delete_at.is_(None))
         .group_by(SaleProduct.sale_id)

@@ -1,7 +1,7 @@
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Index, Numeric
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,9 +52,18 @@ class SaleProduct(CreatedAtMixin, SoftDeleteMixin, Base):
         ForeignKey("PRODUCTS.id", ondelete="RESTRICT"),
         primary_key=True,
     )
-    # Snapshot del precio en el momento de la venta: no sigue al producto.
+    # Snapshot del precio UNITARIO en el momento de la venta: no sigue al
+    # producto. El total de la linea es `price * quantity`.
     price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # La PK (sale_id, product_id) impide repetir producto en una venta: varias
+    # unidades del mismo producto van en una sola linea con su cantidad.
+    quantity: Mapped[int] = mapped_column(
+        nullable=False, default=1, server_default=text("1")
+    )
 
     sale: Mapped[Sale] = relationship(back_populates="lines")
 
-    __table_args__ = (Index("ix_sales_products_sale_id", "sale_id"),)
+    __table_args__ = (
+        Index("ix_sales_products_sale_id", "sale_id"),
+        CheckConstraint("quantity > 0", name="ck_sales_products_quantity_positive"),
+    )

@@ -48,6 +48,7 @@ Para probar la migración sin base de datos: `alembic upgrade head --sql` y `ale
 - **`tenant_id` nunca se acepta en el body**: los schemas Pydantic de entrada no tienen ese campo y sale siempre de la dependencia.
 - El filtro por tenant va **en el `WHERE`** de cada query, nunca en un `if` posterior. Un recurso de otro tenant devuelve **404 y no 403**, para no revelar que existe.
 - `POST /v1/tenants` es el único endpoint sin header (crea el tenant).
+- CORS: `CORS_ORIGINS` (coma-separado). Hay que permitir explícitamente `X-Tenant-Id`: es un header no simple y sin él el preflight falla. En dev el front usa el proxy de Vite (mismo origen) y no depende de CORS.
 
 ## Reglas de venta que no se negocian
 
@@ -57,7 +58,8 @@ Para probar la migración sin base de datos: `alembic upgrade head --sql` y `ale
   - `approved` / `declined` escriben el estado y son **terminales**: una vez escritos, ningún reporte posterior los reinterpreta. La respuesta trae `applied: false`.
   - `created` y `timeout` son **no-ops**: no escriben, no generan evento y el dashboard no se mueve. `timeout` (se tardó o falló la red) **no se persiste nunca**.
   - Consecuencia: `created` significa "pago sin resolver" e incluye lo que dio timeout. No se distinguen, y es intencional.
-- El `price` de `sales_products` es un **snapshot** del precio al vender, no una referencia al producto.
+- El `price` de `sales_products` es un **snapshot** del precio **unitario** al vender, no una referencia al producto.
+- Cada línea lleva **`quantity`** (≥ 1, default 1). La PK de `SALES_PRODUCTS` es `(sale_id, product_id)`, así que un producto va **una sola vez** por venta: `SaleCreate` rechaza productos repetidos con 422. El total de línea es `price * quantity`, tanto en `sale_total` como en el subquery de `compute_from_db`.
 - `price` es `Numeric(12,2)` ↔ `Decimal`. En JSON un `Decimal` sale como **string** (`"10.50"`), no como número. No esperes `float` en ningún sitio.
 
 ## Outbox y reactividad (dashboard)

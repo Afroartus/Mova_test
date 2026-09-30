@@ -1,0 +1,62 @@
+# Stack completo: Postgres + Redis + API FastAPI + frontend SvelteKit.
+#
+#   docker compose up --build
+#   -> app en http://localhost:4173, API en http://localhost:8000/docs
+#
+# Postgres y Redis no se publican al host (solo los usa la API por la red
+# interna), así no chocan con otras instancias locales en 5432/6379.
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: movink
+    volumes:
+      # PG18 movio PGDATA: el volumen va en /var/lib/postgresql, no en .../data.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d movink"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8.10.2-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/movink
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:${WEB_PORT:-4173},http://localhost:5173
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      API_PROXY_TARGET: http://api:8000
+    ports:
+      - "${WEB_PORT:-4173}:4173"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

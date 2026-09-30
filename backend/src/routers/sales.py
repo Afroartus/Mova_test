@@ -62,7 +62,7 @@ class SaleLinesError(Exception):
 
 
 def sale_total(sale: Sale) -> Decimal:
-    return sum((line.price for line in sale.lines), Decimal("0.00"))
+    return sum((line.price * line.quantity for line in sale.lines), Decimal("0.00"))
 
 
 def sale_event_payload(sale: Sale) -> dict:
@@ -76,7 +76,11 @@ def sale_event_payload(sale: Sale) -> dict:
         "status": sale.status.value,
         "total": str(sale_total(sale)),
         "lines": [
-            {"product_id": str(line.product_id), "price": str(line.price)}
+            {
+                "product_id": str(line.product_id),
+                "price": str(line.price),
+                "quantity": line.quantity,
+            }
             for line in sale.lines
         ],
         "created_at": sale.created_at.isoformat(),
@@ -140,7 +144,7 @@ async def fetch_sale(
 async def insert_sale(
     session: AsyncSession,
     tenant_id: UUID,
-    lines: list[tuple[UUID, Decimal | None]],
+    lines: list[tuple[UUID, Decimal | None, int]],
 ) -> Sale:
     """Crea la orden en estado `created`.
 
@@ -149,18 +153,23 @@ async def insert_sale(
     sin este evento la orden nueva no se veria hasta que otro cambio disparara
     un recalculo.
     """
-    product_ids = [product_id for product_id, _ in lines]
+    product_ids = [product_id for product_id, _, _ in lines]
     products = await get_owned_products(session, tenant_id, product_ids)
     missing = [pid for pid in product_ids if pid not in products]
     if missing:
         raise SaleLinesError(missing)
 
     sale = Sale(tenant_id=tenant_id, status=SalesStatus.CREATED)
-    for product_id, price in lines:
+    for product_id, price, quantity in lines:
         product: Product = products[product_id]
-        # Sin precio explicito se congela el precio vigente del producto.
+        # Sin precio explicito se congela el precio vigente del producto. Un
+        # precio explicito de 0 es valido, por eso `is None` y no `or`.
         sale.lines.append(
-            SaleProduct(product_id=product_id, price=price or product.price)
+            SaleProduct(
+                product_id=product_id,
+                price=product.price if price is None else price,
+                quantity=quantity,
+            )
         )
 
     session.add(sale)
@@ -239,6 +248,9 @@ class SaleLineIn(BaseModel):
         default=None, ge=0, max_digits=12, decimal_places=2
     )
 
+    # Unidades de este producto. Un producto va una sola vez por venta.
+    quantity: int = Field(default=1, ge=1, le=10_000)
+
     @field_validator("price")
     @classmethod
     def round_to_cents(cls, value: Decimal | None) -> Decimal | None:
@@ -247,6 +259,16 @@ class SaleLineIn(BaseModel):
 
 class SaleCreate(BaseModel):
     products: list[SaleLineIn] = Field(min_length=1)
+
+    @field_validator("products")
+    @classmethod
+    def unique_products(cls, value: list[SaleLineIn]) -> list[SaleLineIn]:
+        # La PK de SALES_PRODUCTS es (sale_id, product_id): repetir producto
+        # reventaria el INSERT. Las unidades van en `quantity`.
+        ids = [line.product_id for line in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("producto repetido: usa quantity para varias unidades")
+        return value
 
 
 class PaymentStatusIn(BaseModel):
@@ -263,6 +285,7 @@ class SaleLineOut(BaseModel):
 
     product_id: UUID
     price: Decimal
+    quantity: int
 
 
 class SaleOut(BaseModel):
@@ -286,7 +309,10 @@ class SaleOut(BaseModel):
             id=sale.id,
             status=sale.status.value,
             total=sale_total(sale),
-            lines=[SaleLineOut(product_id=x.product_id, price=x.price) for x in sale.lines],
+            lines=[
+                SaleLineOut(product_id=x.product_id, price=x.price, quantity=x.quantity)
+                for x in sale.lines
+            ],
             created_at=sale.created_at,
             applied=applied,
         )
@@ -334,7 +360,7 @@ async def create_sale(
     `tenant_id` sale del header `X-Tenant-Id`, nunca del body. Un producto de
     otro tenant no existe para quien llama: 404, no 403.
     """
-    lines = [(line.product_id, line.price) for line in payload.products]
+    lines = [(line.product_id, line.price, line.quantity) for line in payload.products]
     try:
         sale = await insert_sale(session, tenant_id, lines)
     except SaleLinesError as exc:
